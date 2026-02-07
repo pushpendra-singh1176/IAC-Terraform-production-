@@ -52,11 +52,12 @@ resource "aws_security_group" "my_security_group" {
     
 }
 resource "aws_instance" "my_instance" {
-    ami = var.aws_ami
-    instance_type = var.aws_instance_type
     key_name = aws_key_pair.my_key_pair.key_name
     security_groups = [aws_security_group.my_security_group.name]
-    root_block_device {
+    ami = var.aws_ami
+    instance_type = var.aws_instance_type
+    user_data = file("${path.module}/user_data.sh")
+    root_block_device { 
         volume_size = var.root_volume_size
         volume_type = "gp3"
 

@@ -4,5 +4,7 @@ aws_ami = ""
 aws_key_name = "Terraform-key"
 public_key_path = "C:/Users/Welcome/.ssh/id_ed25519.pub"
 root_volume_size = 60
+# EKS values
+eks_cluster_name = "prod-eks"
 
 
