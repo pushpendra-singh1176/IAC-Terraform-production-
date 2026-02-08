@@ -2,75 +2,56 @@
 set -e
 exec > /var/log/userdata.log 2>&1
 
-echo "===== START BOOTSTRAP ====="
+echo "===== STARTING DOCKER-BASED AUTOMATION ====="
 
-# ------------------ BASE ------------------
-apt update -y
-apt install -y curl unzip git ca-certificates apt-transport-https gnupg
+# 1. Update & Base Tools
+apt-get update -y
+apt-get install -y curl unzip git ca-certificates apt-transport-https gnupg
 
-# ------------------ DOCKER ------------------
+# 2. Docker Install
 if ! command -v docker >/dev/null; then
-  curl -fsSL https://get.docker.com | bash
+  apt-get install -y docker.io
+  systemctl start docker
+  systemctl enable docker
   usermod -aG docker ubuntu
 fi
 
-# ------------------ AWS CLI ------------------
-if ! command -v aws >/dev/null; then
-  curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
-  unzip awscliv2.zip
-  ./aws/install
-fi
+# 3. AWS CLI & Kubectl (EKS access ke liye)
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+sudo apt install unzip -y && unzip awscliv2.zip && ./aws/install
+curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+chmod +x kubectl && mv kubectl /usr/local/bin/
 
-# ------------------ KUBECTL ------------------
-if ! command -v kubectl >/dev/null; then
-  curl -LO https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
-  chmod +x kubectl
-  mv kubectl /usr/local/bin/
-fi
+# ------------------ DOCKER CONTAINERS START ------------------
 
-# ------------------ HELM ------------------
-if ! command -v helm >/dev/null; then
-  curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-fi
+# 4. Jenkins Container (Port 8080)
+echo "Starting Jenkins Container..."
+docker run -d --name jenkins \
+  -p 8080:8080 -p 50000:50000 \
+  -v jenkins_home:/var/jenkins_home \
+  --restart always \
+  jenkins/jenkins:lts
 
-# ------------------ CONNECT TO EKS ------------------
-aws eks update-kubeconfig \
-  --region us-south-1 \
-  --name prod-eks
+# 5. SonarQube Container (Port 9000)
+# SonarQube ko thoda zyada memory/limit chahiye hoti hai
+sysctl -w vm.max_map_count=262144
+echo "Starting SonarQube Container..."
+docker run -d --name sonarqube \
+  -p 9000:9000 \
+  -v sonarqube_data:/opt/sonarqube/data \
+  --restart always \
+  sonarqube:lts-community
 
-# ------------------ TRIVY ------------------
-if ! command -v trivy >/dev/null; then
-  curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-  mv bin/trivy /usr/local/bin/
-fi
+# 6. ArgoCD (Ye hamesha K8s pe hi achha lagta hai)
+# Agar ArgoCD bhi Docker pe chahiye toh 'argocd-util' use hota hai, 
+# par standard practice use EKS pe hi chalane ki hai.
+echo "Waiting for EKS to be ACTIVE for ArgoCD..."
+while [ "$(aws eks describe-cluster --name prod-eks --region us-east-1 --query 'cluster.status' --output text 2>/dev/null)" != "ACTIVE" ]; do
+  sleep 30
+done
 
-# ================== HELM INSTALLS ==================
-
-# -------- ArgoCD --------
+aws eks update-kubeconfig --region us-east-1 --name prod-eks
 kubectl create namespace argocd || true
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-helm repo add argo https://argoproj.github.io/argo-helm
-helm repo update
-
-helm upgrade --install argocd argo/argo-cd \
-  --namespace argocd
-
-# -------- Jenkins --------
-kubectl create namespace jenkins || true
-
-helm repo add jenkins https://charts.jenkins.io
-helm repo update
-
-helm upgrade --install jenkins jenkins/jenkins \
-  --namespace jenkins
-
-# -------- SonarQube --------
-kubectl create namespace sonarqube || true
-
-helm repo add sonarqube https://SonarSource.github.io/helm-chart-sonarqube
-helm repo update
-
-helm upgrade --install sonarqube sonarqube/sonarqube \
-  --namespace sonarqube
-
-echo "===== BOOTSTRAP COMPLETED SUCCESSFULLY ====="
+echo "===== SETUP COMPLETED ====="
